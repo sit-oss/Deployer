@@ -11,6 +11,7 @@ namespace Deployer
     public class SoftwareItem : INotifyPropertyChanged
     {
         private string _name;
+        private string _version;
         private bool _isDeployed;
 
         public string Name
@@ -23,6 +24,12 @@ namespace Deployer
         {
             get => _isDeployed;
             set { _isDeployed = value; OnPropertyChanged(); }
+        }
+
+        public string Version
+        {
+            get => _version;
+            set { _version = value; OnPropertyChanged(); }
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

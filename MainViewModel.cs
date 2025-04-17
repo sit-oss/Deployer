@@ -13,7 +13,9 @@ namespace Deployer
     public class MainViewModel : INotifyPropertyChanged
     {
         public ObservableCollection<SoftwareItem> SoftwareList { get; } = new ObservableCollection<SoftwareItem>();
-    
+
+        public string UserName => System.Security.Principal.WindowsIdentity.GetCurrent().Name.Split('\\').Last();
+
         public ICommand DeployCommand { get; }
 
         private bool _isReady = true;
@@ -41,7 +43,7 @@ namespace Deployer
             IsReady = false;
             await Global.LoadConfigs();
             if (Global.Config == null) return;
-            Title = $"ダウンロード源：{Global.Config.DownloadCenterName}";
+            Title = $"ダウンロード源：{Global.Config.DownloadCenterName} | {UserName}";
             foreach (var item in Global.Config.Items)
             {
                 var isChecked = true;
@@ -52,7 +54,7 @@ namespace Deployer
                     isChecked = false;
                     break;
                 }
-                SoftwareList.Add(new SoftwareItem{Name = item.Name,IsDeployed = isChecked});
+                SoftwareList.Add(new SoftwareItem { Name = item.Name, Version = item.Version, IsDeployed = isChecked });
             }
             IsReady = true;
         }

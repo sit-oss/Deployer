@@ -6,7 +6,7 @@
         xmlns:local="clr-namespace:Deployer"
         mc:Ignorable="d" FontFamily="Meiryo UI, Microsoft Yahei UI"
         WindowStartupLocation="CenterScreen"
-        Title="{Binding Title}" Height="450" Width="322">
+        Title="{Binding Title}" Height="450" Width="381">
     <Window.DataContext>
         <local:MainViewModel/>
     </Window.DataContext>
@@ -27,12 +27,16 @@
         </Style>
     </Window.Resources>
     
-    <Grid Margin="10">
+    <Grid Margin="5">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"></RowDefinition>
             <RowDefinition Height="*"></RowDefinition>
             <RowDefinition Height="Auto"></RowDefinition>
         </Grid.RowDefinitions>
-        <ListBox Grid.Row="0" ItemsSource="{Binding SoftwareList}"
+        <StackPanel Grid.Row="0">
+            <Label Content="{Binding UserName}" Visibility="Collapsed"></Label>
+        </StackPanel>
+        <ListBox Grid.Row="1" ItemsSource="{Binding SoftwareList}"
                  ItemContainerStyle="{StaticResource ListItemStyle}"
                  IsEnabled="{Binding IsReady}"
                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
@@ -44,9 +48,12 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         
-                        <TextBlock Text="{Binding Name}" 
-                                   VerticalAlignment="Center"
-                                   FontSize="14"/>
+                        <TextBlock VerticalAlignment="Center" FontSize="14">
+                            <Run Text="{Binding Name}"/>
+                            <Run Text=" ("/>
+                            <Run Text="{Binding Version}"/>
+                            <Run Text=")"/>
+                        </TextBlock>
                         
                         <StackPanel Grid.Column="1" Orientation="Horizontal">
                             <Image Source="/Resources/tick_check_accept_mark_icon.png" 
@@ -64,6 +71,6 @@
                 </DataTemplate>
             </ListBox.ItemTemplate>
         </ListBox>
-        <ProgressBar Grid.Row="1" Height="20" IsIndeterminate="True" Visibility="{Binding IsReady, Converter={StaticResource InverseBooleanToVisibilityConverter}}"></ProgressBar>
+        <ProgressBar Grid.Row="2" Height="20" IsIndeterminate="True" Visibility="{Binding IsReady, Converter={StaticResource InverseBooleanToVisibilityConverter}}"></ProgressBar>
     </Grid>
 </Window>
