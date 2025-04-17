@@ -1,0 +1,69 @@
+﻿<Window x:Class="Deployer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:Deployer"
+        mc:Ignorable="d" FontFamily="Meiryo UI, Microsoft Yahei UI"
+        WindowStartupLocation="CenterScreen"
+        Title="{Binding Title}" Height="450" Width="322">
+    <Window.DataContext>
+        <local:MainViewModel/>
+    </Window.DataContext>
+    <Window.Resources>
+        <Style x:Key="ListItemStyle" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0 2"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border Background="{TemplateBinding Background}"
+                                Padding="10">
+                            <ContentPresenter/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"></RowDefinition>
+            <RowDefinition Height="Auto"></RowDefinition>
+        </Grid.RowDefinitions>
+        <ListBox Grid.Row="0" ItemsSource="{Binding SoftwareList}"
+                 ItemContainerStyle="{StaticResource ListItemStyle}"
+                 IsEnabled="{Binding IsReady}"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <TextBlock Text="{Binding Name}" 
+                                   VerticalAlignment="Center"
+                                   FontSize="14"/>
+                        
+                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                            <Image Source="/Resources/tick_check_accept_mark_icon.png" 
+                                   Width="20"
+                                   Visibility="{Binding IsDeployed, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+
+                            <Button Content="インストール"
+                                    Command="{Binding DataContext.DeployCommand, RelativeSource={RelativeSource AncestorType=ListBox}, IsAsync=True}"
+                                    CommandParameter="{Binding}"
+                                    Visibility="{Binding IsDeployed, Converter={StaticResource InverseBooleanToVisibilityConverter}}"
+                                    Padding="10 5"
+                                    Margin="10 0 0 0"/>
+                        </StackPanel>
+                    </Grid>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+        <ProgressBar Grid.Row="1" Height="20" IsIndeterminate="True" Visibility="{Binding IsReady, Converter={StaticResource InverseBooleanToVisibilityConverter}}"></ProgressBar>
+    </Grid>
+</Window>
