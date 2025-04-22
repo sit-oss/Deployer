@@ -62,11 +62,11 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </ApplicationDefinition>
+    <Compile Include="AsyncCommand.cs" />
     <Compile Include="DeployConfig.cs" />
     <Compile Include="Global.cs" />
     <Compile Include="InverseBooleanToVisibilityConverter.cs" />
     <Compile Include="MainViewModel.cs" />
-    <Compile Include="RelayCommand.cs" />
     <Compile Include="third\Desktop.cs" />
     <Compile Include="third\SimpleJson.cs" />
     <Compile Include="SoftwareItem.cs" />

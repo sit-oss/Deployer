@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -15,8 +16,225 @@ namespace Deployer
     internal static class Global
     {
         public static string DownloadPath { get; private set; }
-        public static DeployConfig Config { get; private set; } = null;
+        public static DeployConfig Config { get; private set; }
+        public static async Task<bool> DoAction(string action, string target)
+        {
+            switch (action)
+            {
+                case "IfFileExist":
+                    return File.Exists(target.ExtractEnvPath());
+                case "IfFileInEnv":
+                    return CheckIfFileInEnvironment(target);
+                case "Delay":
+                    if (int.TryParse(target, out var delay))
+                    {
+                        await Task.Delay(delay);
+                        return true;
+                    }
+                    break;
+                case "DownloadFile":
+                    var splDownload = target.Split(new[] { '|' }, 3);
+                    if (splDownload.Length != 3) return false;
+                    var filePath = splDownload[2].ExtractEnvPath();
+                    if(File.Exists(filePath))
+                    {
+                        var md5 = File.ReadAllBytes(filePath).Md5();
+                        if (md5 == splDownload[1])
+                            return true;
+                        File.Delete(filePath);
+                    }
+                    var downloadFile = await DownloadFile(splDownload[0]);
+                    if (downloadFile != null && downloadFile.Md5() == splDownload[1])
+                    {
+                        File.WriteAllBytes(filePath, downloadFile);
+                        return true;
+                    }
+                    break;
+                case "DownloadFont":
+                    var splDownloadFont = target.Split(new[] { '|' }, 3);
+                    if (splDownloadFont.Length != 3) return false;
+                    var windowsFontsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "Windows", "Fonts");
+                    var fontPath = Path.Combine(windowsFontsPath, Path.GetFileName(splDownloadFont[0]));
+                    if(File.Exists(fontPath)) return true;
+                    var downloadFont = await DownloadFile(splDownloadFont[0]);
+                    if (downloadFont != null && downloadFont.Md5() == splDownloadFont[1])
+                    {
+                        File.WriteAllBytes(fontPath, downloadFont);
+                        var fontKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows NT\CurrentVersion\Fonts");
+                        fontKey?.SetValue($"{splDownloadFont[2]} (TrueType)", fontPath);
+                        fontKey?.Close();
+                        return true;
+                    }
+                    break;
+                case "RunAsAdmin":
+                    var splRunAdmin = target.Split(new[] { '|' }, 2);
+                    if (splRunAdmin.Length != 2) return false;
+                    var filePathAdmin = splRunAdmin[0].ExtractEnvPath();
+                    if (File.Exists(filePathAdmin))
+                        return await RunProcess(filePathAdmin, splRunAdmin[1].ExtractEnvPath(),true,true) == 0;
+                    break;
+                case "RunAsUser":
+                    var splRunUser = target.Split(new[] { '|' }, 2);
+                    if (splRunUser.Length != 2) return false;
+                    var filePathUser = splRunUser[0].ExtractEnvPath();
+                    if (File.Exists(filePathUser))
+                        return await RunProcess(filePathUser, splRunUser[1].ExtractEnvPath(), false, true) == 0;
+                    break;
+                case "RunAtNewDesktop":
+                    var splRunDesktop = target.Split(new[] { '|' }, 2);
+                    if (splRunDesktop.Length != 2) return false;
+                    var filePathDesktop = splRunDesktop[0].ExtractEnvPath();
+                    if (File.Exists(filePathDesktop))
+                        return await RunAtNewDesktop($"{filePathDesktop} {splRunDesktop[1].ExtractEnvPath()}") == 0;
+                    break;
+                case "RunCommands":
+                    var splRunCommands = target.Split('|');
+                    var runCommandCount = 0;
+                    foreach (var splRunCommand in splRunCommands)
+                    {
+                        var splCmd = splRunCommand.Split('?');
+                        if (splCmd.Length != 2) return false;
+                        var runCommand = await RunProcess(splCmd[0].ExtractEnvPath(), splCmd[1].ExtractEnvPath());
+                        if(runCommand == 0) runCommandCount++;
+                    }
+                    if (runCommandCount == splRunCommands.Length)
+                        return true;
+                    break;
+                case "PerformMsiexec":
+                    var splMsi = target.Split(new[] { '|' }, 2);
+                    if (splMsi.Length != 2) return false;
+                    var filePathMsi = splMsi[0].ExtractEnvPath();
+                    if (File.Exists(filePathMsi))
+                        return await RunMsiexec($"/i {filePathMsi} {splMsi[1].ExtractEnvPath()}") == 0;
+                    break;
+                case "WriteToFile":
+                    var splWrite = target.Split(new[] { '|' }, 2);
+                    if (splWrite.Length != 2) return false;
+                    var filePathWrite = splWrite[0].ExtractEnvPath();
+                    var content = Encoding.UTF8.GetString(Convert.FromBase64String(splWrite[1]));
+                    if (string.IsNullOrEmpty(filePathWrite) || string.IsNullOrEmpty(content)) return false;
+                    return WriteToFile(filePathWrite, content);
+                case "ExtractZipFile":
+                    var splZip = target.Split(new[] { '|' }, 2);
+                    if (splZip.Length != 2) return false;
+                    return await ExtractZipFile(splZip[0].ExtractEnvPath(), splZip[1].ExtractEnvPath());
+                case "AddToEnv":
+                    var splEnv = target.Split(new[] { '|' }, 3);
+                    return splEnv.Length == 3 && AddEnvironment(splEnv[1], splEnv[2], splEnv[0]);
+                case "WaitProcess":
+                    return await WaitProcess(target);
+                case "KillProcess":
+                    return await KillProcess(target);
+                case "RemoveFile":
+                    return RemoveFile(target.ExtractEnvPath());
+                case "RemoveDir":
+                    return RemoveFolder(target.ExtractEnvPath());
+            }
+            return false;
+        }
 
+        #region Actions
+        private static bool WriteToFile(string path, string content)
+        {
+            try
+            {
+                var dirPath = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dirPath) && !Directory.Exists(dirPath))
+                    Directory.CreateDirectory(dirPath);
+                File.WriteAllText(path,content);
+                return true;
+            }
+            catch (Exception)
+            {
+                // ignored
+            }
+            return false;
+        }
+        private static async Task<bool> ExtractZipFile(string source, string dist)
+        {
+            try
+            {
+                await Task.Factory.StartNew(() => { ZipFile.ExtractToDirectory(source, dist); });
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+        private static bool AddEnvironment(string name,string value,string scope)
+        {
+            try
+            {
+                if (!Enum.TryParse(scope, out EnvironmentVariableTarget envScope)) return false;
+                var oldValue = Environment.GetEnvironmentVariable(name, envScope);
+                Environment.SetEnvironmentVariable(name, string.IsNullOrEmpty(oldValue) ? value : $"{oldValue};{value}", envScope);
+                return true;
+            }
+            catch (Exception)
+            {
+                // ignored
+            }
+            return false;
+        }
+        private static async Task<bool> WaitProcess(string processName)
+        {
+            for (var i = 0; i < 20; i++)
+            {
+                if (Process.GetProcessesByName(processName).Any())
+                    return true;
+                await Task.Delay(500);
+            }
+            return false;
+        }
+        private static async Task<bool> KillProcess(string processName)
+        {
+            var processes = Process.GetProcessesByName(processName);
+            foreach (var process in processes)
+            {
+                try
+                {
+                    process.Kill();
+                    await process.WaitForExitAsync();
+                }
+                catch (Exception)
+                {
+                    // ignored
+                }
+            }
+            return true;
+        }
+        private static bool RemoveFile(string path)
+        {
+            if (!File.Exists(path)) return true;
+            try
+            {
+                File.Delete(path);
+                return true;
+            }
+            catch (Exception)
+            {
+                // ignored
+            }
+            return false;
+        }
+        private static bool RemoveFolder(string path)
+        {
+            if (!Directory.Exists(path)) return true;
+            try
+            {
+                Directory.Delete(path, true);
+                return true;
+            }
+            catch (Exception)
+            {
+                // ignored
+            }
+            return false;
+        }
+        #endregion
+
+        #region Funcs
         public static async Task LoadConfigs()
         {
             DownloadPath = Path.Combine(Path.GetTempPath(), "SITDeployer");
@@ -57,197 +275,6 @@ namespace Deployer
             }
         }
 
-        public static async Task<bool> DoAction(string action, string target)
-        {
-            switch (action)
-            {
-                case "IfFileExist":
-                    return File.Exists(target.ExtractEnvPath());
-                case "IfFileInPath":
-                    return CheckIfFileInPath(target);
-                case "Delay":
-                    if (int.TryParse(target, out var delay))
-                    {
-                        await Task.Delay(delay);
-                        return true;
-                    }
-                    break;
-                case "DownloadFile":
-                    var splDownload = target.Split(new[] { '|' }, 3);
-                    if (splDownload.Length != 3) return false;
-                    var filePath = Path.Combine(DownloadPath,splDownload[2]);
-                    if(File.Exists(filePath))
-                    {
-                        var md5 = File.ReadAllBytes(filePath).Md5();
-                        if (md5 == splDownload[1])
-                            return true;
-                        File.Delete(filePath);
-                    }
-                    var downloadFile = await DownloadFile(splDownload[0], splDownload[1]);
-                    if (downloadFile != null)
-                    {
-                        try
-                        {
-                            File.WriteAllBytes(filePath, downloadFile);
-                            return true;
-                        }
-                        catch (Exception)
-                        {
-                            // ignored
-                        }
-                    }
-                    break;
-                case "DownloadFont":
-                    var splDownloadFont = target.Split(new[] { '|' }, 3);
-                    if (splDownloadFont.Length != 3) return false;
-                    var windowsFontsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "Windows", "Fonts");
-                    var fontPath = Path.Combine(windowsFontsPath, Path.GetFileName(splDownloadFont[0]));
-                    if(File.Exists(fontPath)) return true;
-                    var downloadFont = await DownloadFile(splDownloadFont[0], splDownloadFont[1]);
-                    if (downloadFont != null)
-                    {
-                        File.WriteAllBytes(fontPath, downloadFont);
-                        var fontKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows NT\CurrentVersion\Fonts");
-                        fontKey?.SetValue($"{splDownloadFont[2]} (TrueType)", fontPath);
-                        fontKey?.Close();
-                        return true;
-                    }
-                    break;
-                case "RunAsAdmin":
-                    var splRunAdmin = target.Split(new[] { '|' }, 2);
-                    if (splRunAdmin.Length != 2) return false;
-                    var filePathAdmin = Path.Combine(DownloadPath, splRunAdmin[0]);
-                    if (File.Exists(filePathAdmin))
-                        return await RunProcess(filePathAdmin, splRunAdmin[1].ExtractEnvPath(),true) == 0;
-                    break;
-                case "RunAsUser":
-                    var splRunUser = target.Split(new[] { '|' }, 2);
-                    if (splRunUser.Length != 2) return false;
-                    var filePathUser = Path.Combine(DownloadPath, splRunUser[0]);
-                    if (File.Exists(filePathUser))
-                        return await RunProcess(filePathUser, splRunUser[1].ExtractEnvPath()) == 0;
-                    break;
-                case "RunAtNewDesktop":
-                    var splRunDesktop = target.Split(new[] { '|' }, 2);
-                    if (splRunDesktop.Length != 2) return false;
-                    var filePathDesktop = Path.Combine(DownloadPath, splRunDesktop[0]);
-                    if (File.Exists(filePathDesktop))
-                        return await RunAtNewDesktop($"{filePathDesktop} {splRunDesktop[1].ExtractEnvPath()}") == 0;
-                    break;
-                case "RunCommands":
-                    var splRunCommands = target.Split('|');
-                    var runCommandCount = 0;
-                    foreach (var splRunCommand in splRunCommands)
-                    {
-                        var splCmd = splRunCommand.Split('?');
-                        if (splCmd.Length != 2) return false;
-                        var runCommand = await RunProcess(splCmd[0].ExtractEnvPath(), splCmd[1]);
-                        if(runCommand == 0) runCommandCount++;
-                    }
-                    if (runCommandCount == splRunCommands.Length)
-                        return true;
-                    break;
-                case "PerformMsiexec":
-                    var splMsi = target.Split(new[] { '|' }, 2);
-                    if (splMsi.Length != 2) return false;
-                    var filePathMsi = Path.Combine(DownloadPath, splMsi[0]);
-                    if (File.Exists(filePathMsi))
-                        return await RunMsiexec($"/i {filePathMsi} {splMsi[1].ExtractEnvPath()}") == 0;
-                    break;
-                case "WriteToFile":
-                    var splWrite = target.Split(new[] { '|' }, 2);
-                    if (splWrite.Length != 2) return false;
-                    var filePathWrite = splWrite[0].ExtractEnvPath();
-                    var content = Encoding.UTF8.GetString(Convert.FromBase64String(splWrite[1]));
-                    if (string.IsNullOrEmpty(filePathWrite) || string.IsNullOrEmpty(content)) return false;
-                    try
-                    {
-                        var dirPath = Path.GetDirectoryName(filePathWrite);
-                        if (!string.IsNullOrEmpty(dirPath) && !Directory.Exists(dirPath))
-                            Directory.CreateDirectory(dirPath);
-                        File.WriteAllText(filePathWrite,content);
-                        return true;
-                    }
-                    catch (Exception)
-                    {
-                        // ignored
-                    }
-                    break;
-                case "ExtractZipFile":
-                    var splZip = target.Split(new[] { '|' }, 2);
-                    if (splZip.Length != 2) return false;
-                    var filePathZip = Path.Combine(DownloadPath, splZip[0]);
-                    try
-                    {
-                        ZipFile.ExtractToDirectory(filePathZip, splZip[1].ExtractEnvPath());
-                        return true;
-                    }
-                    catch (Exception)
-                    {
-                        // ignored
-                    }
-                    break;
-                case "AddToEnv":
-                    var splEnv = target.Split(new[] { '|' }, 3);
-                    if (splEnv.Length != 3) return false;
-                    var envScope = Enum.TryParse(splEnv[0], out EnvironmentVariableTarget envTarget) ? envTarget : EnvironmentVariableTarget.User;
-                    var envName = splEnv[1];
-                    var envPath = splEnv[2].ExtractEnvPath();
-                    var oldEnvValue = Environment.GetEnvironmentVariable(envName, envScope);
-                    var newValue = oldEnvValue + $";{envPath}";
-                    try
-                    {
-                        Environment.SetEnvironmentVariable(envName, newValue, envScope);
-                        return true;
-                    }
-                    catch (Exception)
-                    {
-                        // ignored
-                    }
-                    break;
-                case "WaitProcess":
-                    for (var i = 0; i < 20; i++)
-                    {
-                        if(Process.GetProcessesByName(target).Any())
-                            return true;
-                        await Task.Delay(500);
-                    }
-                    break;
-                case "KillProcess":
-                    var processesForKill = Process.GetProcessesByName(target);
-                    foreach (var process in processesForKill)
-                    {
-                        try
-                        {
-                            process.Kill();
-                            process.WaitForExit();
-                        }
-                        catch (Exception)
-                        {
-                            // ignored
-                        }
-                    }
-                    break;
-                case "RemoveFile":
-                    var filePathForRemove = Path.Combine(DownloadPath, target);
-                    if (File.Exists(filePathForRemove))
-                    {
-                        try
-                        {
-                            File.Delete(filePathForRemove);
-                            return true;
-                        }
-                        catch (Exception)
-                        {
-                            // ignored
-                        }
-                    }
-                    break;
-
-            }
-            return false;
-        }
-
         public static async Task<int> RunAtNewDesktop(string command)
         {
             using (var desktop = Onyeyiri.Desktop.CreateDesktop("sitdeployer"))
@@ -259,7 +286,7 @@ namespace Deployer
             }
         }
 
-        public static async Task<int> RunProcess(string path, string param,bool runas = false)
+        public static async Task<int> RunProcess(string path, string param, bool runas = false, bool hide = false)
         {
             var process = new Process
             {
@@ -267,13 +294,13 @@ namespace Deployer
                 {
                     FileName = path,
                     Arguments = param,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    WindowStyle = ProcessWindowStyle.Hidden,
-                    CreateNoWindow = true
+                    UseShellExecute = !hide,
+                    RedirectStandardOutput = hide,
+                    RedirectStandardError = hide,
+                    CreateNoWindow = hide
                 }
             };
+            if (hide) process.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;
             if (runas) process.StartInfo.Verb = "runas";
             process.Start();
             await process.WaitForExitAsync();
@@ -313,38 +340,66 @@ namespace Deployer
             }
         }
 
-        public static async Task<byte[]> DownloadFile(string url,string md5, int timeout = 30)
+        public static async Task<byte[]> DownloadFile(string url,int timeout = 30000)
         {
-            using (var client = new System.Net.Http.HttpClient())
+            using (var client = new System.Net.Http.HttpClient(new System.Net.Http.HttpClientHandler { AllowAutoRedirect = true }))
             {
-                client.Timeout = TimeSpan.FromSeconds(timeout);
+                client.Timeout = TimeSpan.FromMilliseconds(timeout);
                 var response = await client.GetAsync(url);
-                if (response.IsSuccessStatusCode)
+                if (!response.IsSuccessStatusCode) return null;
+                var result = await response.Content.ReadAsByteArrayAsync();
+                if (result != null && result.Length > 0)
+                    return result;
+            }
+            return null;
+        }
+        public static async Task<byte[]> DownloadFile(string url, IProgress<double> progress)
+        {
+            var handler = new System.Net.Http.HttpClientHandler { AllowAutoRedirect = true };
+            using (var client = new System.Net.Http.HttpClient(handler))
+            {
+                client.Timeout = TimeSpan.FromMinutes(3);
+                var response = await client.GetAsync(url, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+                if (!response.IsSuccessStatusCode)
                 {
-                    var result = await response.Content.ReadAsByteArrayAsync();
-                    if (result.Md5() == md5)
-                        return result;
+                    throw new Exception($"The request returned with HTTP status code {response.StatusCode}");
                 }
-                return null;
+                var total = response.Content.Headers.ContentLength ?? -1L;
+                var canReportProgress = total != -1 && progress != null;
+                using (var ms = new MemoryStream())
+                using (var stream = await response.Content.ReadAsStreamAsync())
+                {
+                    var totalRead = 0L;
+                    var buffer = new byte[4096];
+                    var isMoreToRead = true;
+                    do
+                    {
+                        var read = await stream.ReadAsync(buffer, 0, buffer.Length);
+                        if (read == 0)
+                        {
+                            isMoreToRead = false;
+                        }
+                        else
+                        {
+                            var data = new byte[read];
+                            buffer.ToList().CopyTo(0, data, 0, read);
+                            await ms.WriteAsync(data, 0, data.Length);
+                            totalRead += read;
+                            if (canReportProgress)
+                                progress.Report(totalRead * 1d / (total * 1d) * 100);
+                        }
+                    } while (isMoreToRead);
+                    return ms.ToArray();
+                }
             }
         }
 
-        public static bool CheckIfFileInPath(string fileName)
+        public static bool CheckIfFileInEnvironment(string fileName)
         {
             var find = Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User)?.Split(';').Select(s => Path.Combine(s, "gcc.exe")).FirstOrDefault(File.Exists) ?? Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine)?.Split(';').Select(s => Path.Combine(s, "gcc.exe")).FirstOrDefault(File.Exists);
             return find != null;
         }
-
-        // private const int MAX_PATH = 260;
-        // [System.Runtime.InteropServices.DllImport("shlwapi.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = false)]
-        // static extern bool PathFindOnPath([System.Runtime.InteropServices.In, System.Runtime.InteropServices.Out] StringBuilder pszFile, [System.Runtime.InteropServices.In] string[] ppszOtherDirs);
-        // public static string GetFullPathFromWindows(string exeName)
-        // {
-        //     if (exeName.Length >= MAX_PATH)
-        //         return null;
-        //     var sb = new StringBuilder(exeName, MAX_PATH);
-        //     return PathFindOnPath(sb, null) ? sb.ToString() : null;
-        // }
+        #endregion
 
         #region Ext Functions
 
@@ -356,8 +411,7 @@ namespace Deployer
             }
         }
 
-        public static Task WaitForExitAsync(this Process process, 
-            CancellationToken cancellationToken = default(CancellationToken))
+        public static Task WaitForExitAsync(this Process process, CancellationToken cancellationToken = default(CancellationToken))
         {
             if (process.HasExited) return Task.CompletedTask;
 
@@ -371,16 +425,30 @@ namespace Deployer
         }
 
         private static readonly System.Text.RegularExpressions.Regex rgxEnvs = new System.Text.RegularExpressions.Regex(@"%(\w+)%", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        public static string ExtractEnvPath(this string path)
+        public static string ExtractEnvPath(this string path,bool reverseSlash = false)
         {
-            if(string.IsNullOrEmpty(path) || !path.Contains('%') || !rgxEnvs.IsMatch(path)) return path;
-            foreach (System.Text.RegularExpressions.Match match in rgxEnvs.Matches(path))
+            var result = path;
+            if (!string.IsNullOrEmpty(result) && result.Contains('%') && rgxEnvs.IsMatch(result))
             {
-                if (!Enum.TryParse(match.Value.Replace("%", ""), out Environment.SpecialFolder folder)) continue;
-                var gp = Environment.GetFolderPath(folder);
-                return path.Replace(match.Value, gp);
+                foreach (System.Text.RegularExpressions.Match match in rgxEnvs.Matches(result))
+                {
+                    switch (match.Value)
+                    {
+                        case "%DP%":
+                        case "%DownloadPath%":
+                            result = result.Replace(match.Value, DownloadPath);
+                            continue;
+                        case "%UserName%":
+                            result = result.Replace(match.Value, Environment.UserName);
+                            continue;
+                    }
+                    if (!Enum.TryParse(match.Value.Replace("%", ""), out Environment.SpecialFolder folder)) continue;
+                    result = result.Replace(match.Value, Environment.GetFolderPath(folder));
+                }
             }
-            return path;
+            if(reverseSlash)
+                result = result?.Replace("\\", "/");
+            return result;
         }
         #endregion
     }

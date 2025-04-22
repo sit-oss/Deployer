@@ -16,7 +16,7 @@ namespace Deployer
 
         public string UserName => System.Security.Principal.WindowsIdentity.GetCurrent().Name.Split('\\').Last();
 
-        public ICommand DeployCommand { get; }
+        public IAsyncCommand<SoftwareItem> DeployCommand { get; }
 
         private bool _isReady = true;
         public bool IsReady
@@ -34,7 +34,7 @@ namespace Deployer
 
         public MainViewModel()
         {
-            DeployCommand = new RelayCommand<SoftwareItem>(DeploySoftware);
+            DeployCommand = new AsyncCommand<SoftwareItem>(DeploySoftware);
             _ = Init();
         }
 
@@ -59,7 +59,7 @@ namespace Deployer
             IsReady = true;
         }
 
-        private async void DeploySoftware(SoftwareItem software)
+        private async Task DeploySoftware(SoftwareItem software)
         {
             try
             {
